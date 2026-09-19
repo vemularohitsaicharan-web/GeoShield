@@ -1,0 +1,44 @@
+# Secrets — never commit real API keys
+server/.env
+server/.env.*
+!server/.env.example
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+mobile/node_modules/
+server/node_modules/
+
+# Expo
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/expo-env.d.ts
+
+# Native build folders
+mobile/ios/
+mobile/android/
+
+# Native artifacts
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Logs / debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
