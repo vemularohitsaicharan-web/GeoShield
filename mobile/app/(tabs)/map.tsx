@@ -25,7 +25,9 @@ export default function RiskMapScreen() {
         {(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const).map((level) => (
           <View key={level} style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: RISK_COLORS[level] }]} />
-            <Text style={styles.legendText}>{level}</Text>
+            <Text style={styles.legendText} allowFontScaling={false} numberOfLines={1}>
+              {level}
+            </Text>
           </View>
         ))}
       </View>
@@ -70,16 +72,18 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 12,
     right: 12,
+    minWidth: 92,
     backgroundColor: theme.surface + 'ee',
     borderColor: theme.border,
     borderWidth: 1,
     borderRadius: 10,
-    padding: 8,
-    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    gap: 5,
   },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendDot: { width: 8, height: 8, borderRadius: 4 },
-  legendText: { color: theme.text, fontSize: 11 },
+  legendDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  legendText: { color: theme.text, fontSize: 11, flexShrink: 0 },
   detailCard: {
     position: 'absolute',
     bottom: 12,
