@@ -30,8 +30,11 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (contain Supabase URL/anon key — anon key is not
+# secret by Supabase design, but keep out of git regardless)
+.env
 .env*.local
+!.env.example
 
 # typescript
 *.tsbuildinfo

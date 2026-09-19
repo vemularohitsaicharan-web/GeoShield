@@ -7,6 +7,17 @@ import { TERRAIN_CELLS } from "./demoRegion";
 import { AiStatus, analyzeReport, pingAiService } from "./groqClient";
 import { computeRisk } from "./riskEngine";
 import { generateReadingsForScenario } from "./scenarios";
+import { fetchOwnRole, getActiveSession, signInAsRole, signOut, supabaseConfigured } from "./supabaseClient";
+import {
+  fetchAlerts,
+  fetchFieldReports,
+  insertAlerts,
+  insertRiskPrediction,
+  updateAlertStatus,
+  updateFieldReportStatus,
+  upsertFieldReport,
+  uploadReportPhoto,
+} from "./supabaseData";
 import {
   AlertItem,
   EnvironmentalReading,
@@ -20,24 +31,29 @@ import {
 const STORAGE_KEY = "geoshield-ner-state-v1";
 
 interface PersistedState {
-  role: UserRole;
   scenario: ScenarioId;
   reports: FieldReport[];
   alerts: AlertItem[];
 }
 
+type AuthStatus = "CHECKING" | "SIGNED_OUT" | "SIGNED_IN";
+
 interface AppState extends PersistedState {
+  role: UserRole | null;
+  authStatus: AuthStatus;
   readings: EnvironmentalReading[];
   predictions: RiskPrediction[];
   isOffline: boolean;
   networkConnected: boolean;
   aiStatus: AiStatus | "CHECKING";
+  backendStatus: "CONNECTED" | "LOCAL_ONLY" | "CHECKING";
   lastPredictionAt?: string;
 }
 
 interface AppContextValue extends AppState {
   effectiveOffline: boolean;
-  setRole: (role: UserRole) => void;
+  login: (role: UserRole) => Promise<void>;
+  logout: () => Promise<void>;
   runScenario: (scenario: ScenarioId) => void;
   setOffline: (offline: boolean) => void;
   submitReport: (input: {
@@ -101,7 +117,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const initialPredictions = useMemo(() => computeAllPredictions(initialReadings), [initialReadings]);
 
   const [state, setState] = useState<AppState>({
-    role: "AUTHORITY",
+    role: supabaseConfigured ? null : "AUTHORITY",
+    authStatus: supabaseConfigured ? "CHECKING" : "SIGNED_IN",
     scenario: "NORMAL",
     readings: initialReadings,
     predictions: initialPredictions,
@@ -110,12 +127,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     isOffline: false,
     networkConnected: true,
     aiStatus: "CHECKING",
+    backendStatus: supabaseConfigured ? "CHECKING" : "LOCAL_ONLY",
     lastPredictionAt: new Date().toISOString(),
   });
 
-  // Real device connectivity (Phase 6): reflects the actual network state
-  // via NetInfo, independent of the manual "force offline" demo toggle
-  // below. Both feed into `effectiveOffline`.
+  // Supabase is a best-effort mirror layer, never the source of truth for
+  // the UI — every write below happens against local state first (so the
+  // app keeps working offline or if Supabase is unreachable), then is
+  // best-effort persisted to Supabase in the background.
+  const userIdRef = useRef<string | null>(null);
+
   const wasConnected = useRef(true);
   const syncPendingReportsRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => {
@@ -124,9 +145,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setState((prev) => ({ ...prev, networkConnected: connected }));
 
       if (connected && !wasConnected.current) {
-        // Connection just came back — auto-sync any queued reports, per
-        // the offline-first workflow ("when connection returns,
-        // synchronize pending reports").
         syncPendingReportsRef.current();
       }
       wasConnected.current = connected;
@@ -134,56 +152,130 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return unsubscribe;
   }, []);
 
+  // Loads reference/report/alert state that depends on a live Supabase
+  // session — shared by the initial-mount check (existing session) and
+  // by a fresh login.
+  const loadBackendData = async (userId: string) => {
+    userIdRef.current = userId;
+    try {
+      const [remoteReports, remoteAlerts] = await Promise.all([fetchFieldReports(), fetchAlerts()]);
+      setState((prev) => {
+        const localIds = new Set(prev.reports.map((r) => r.id));
+        const localAlertIds = new Set(prev.alerts.map((a) => a.id));
+        return {
+          ...prev,
+          reports: [...prev.reports, ...remoteReports.filter((r) => !localIds.has(r.id))],
+          alerts: [...prev.alerts, ...remoteAlerts.filter((a) => !localAlertIds.has(a.id))],
+          backendStatus: "CONNECTED",
+        };
+      });
+    } catch (err) {
+      console.warn("Supabase unavailable, continuing local-only:", err);
+      setState((prev) => ({ ...prev, backendStatus: "LOCAL_ONLY" }));
+    }
+  };
+
   useEffect(() => {
     (async () => {
+      let persisted: PersistedState | null = null;
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const persisted: PersistedState = JSON.parse(raw);
-          const readings = generateReadingsForScenario(persisted.scenario);
-          setState((prev) => ({
-            ...prev,
-            role: persisted.role,
-            scenario: persisted.scenario,
-            reports: persisted.reports,
-            alerts: persisted.alerts,
-            readings,
-            predictions: computeAllPredictions(readings),
-          }));
-        }
+        if (raw) persisted = JSON.parse(raw);
       } catch {
         // Corrupt or unavailable local storage — continue with defaults.
       }
+
+      if (persisted) {
+        const readings = generateReadingsForScenario(persisted.scenario);
+        setState((prev) => ({
+          ...prev,
+          scenario: persisted!.scenario,
+          reports: persisted!.reports,
+          alerts: persisted!.alerts,
+          readings,
+          predictions: computeAllPredictions(readings),
+        }));
+      }
+
       const status = await pingAiService();
       setState((prev) => ({ ...prev, aiStatus: status }));
+
+      if (supabaseConfigured) {
+        const session = await getActiveSession();
+        if (session) {
+          const role = await fetchOwnRole(session.user.id);
+          setState((prev) => ({ ...prev, role, authStatus: "SIGNED_IN" }));
+          await loadBackendData(session.user.id);
+        } else {
+          setState((prev) => ({ ...prev, authStatus: "SIGNED_OUT", backendStatus: "LOCAL_ONLY" }));
+        }
+      }
     })();
   }, []);
 
   useEffect(() => {
     const toPersist: PersistedState = {
-      role: state.role,
       scenario: state.scenario,
       reports: state.reports,
       alerts: state.alerts,
     };
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(toPersist)).catch(() => {});
-  }, [state.role, state.scenario, state.reports, state.alerts]);
+  }, [state.scenario, state.reports, state.alerts]);
+
+  const login: AppContextValue["login"] = async (role) => {
+    const session = await signInAsRole(role);
+    if (!session) throw new Error("Sign-in did not return a session");
+    setState((prev) => ({ ...prev, role, authStatus: "SIGNED_IN" }));
+    await loadBackendData(session.user.id);
+  };
+
+  const logout: AppContextValue["logout"] = async () => {
+    await signOut();
+    userIdRef.current = null;
+    setState((prev) => ({ ...prev, role: null, authStatus: "SIGNED_OUT", backendStatus: "LOCAL_ONLY" }));
+  };
 
   const runScenario = (scenario: ScenarioId) => {
     const readings = generateReadingsForScenario(scenario);
     const predictions = computeAllPredictions(readings);
+    const newAlerts = alertsFromPredictions(predictions, state.alerts);
+    const createdAlerts = newAlerts.filter((a) => !state.alerts.some((existing) => existing.id === a.id));
+
     setState((prev) => ({
       ...prev,
       scenario,
       readings,
       predictions,
-      alerts: alertsFromPredictions(predictions, prev.alerts),
+      alerts: newAlerts,
       lastPredictionAt: new Date().toISOString(),
     }));
+
+    if (supabaseConfigured && state.backendStatus === "CONNECTED") {
+      predictions.forEach((p) => insertRiskPrediction(p).catch((err) => console.warn("insertRiskPrediction failed:", err)));
+      if (createdAlerts.length > 0) {
+        insertAlerts(createdAlerts).catch((err) => console.warn("insertAlerts failed:", err));
+      }
+    }
   };
 
-  const setRole = (role: UserRole) => setState((prev) => ({ ...prev, role }));
   const setOffline = (offline: boolean) => setState((prev) => ({ ...prev, isOffline: offline }));
+
+  const mirrorReportToSupabase = async (report: FieldReport) => {
+    if (!(supabaseConfigured && state.backendStatus === "CONNECTED")) return;
+    try {
+      let photoUrl = report.photoUri;
+      if (photoUrl && !photoUrl.startsWith("http")) {
+        photoUrl = await uploadReportPhoto(photoUrl, report.id);
+        setState((prev) => ({
+          ...prev,
+          reports: prev.reports.map((r) => (r.id === report.id ? { ...r, photoUri: photoUrl } : r)),
+        }));
+      }
+      await upsertFieldReport({ ...report, photoUri: photoUrl }, userIdRef.current);
+    } catch (err) {
+      console.warn("Supabase report mirror failed (report stays local):", err);
+    }
+  };
 
   const submitReport: AppContextValue["submitReport"] = async (input) => {
     const report: FieldReport = {
@@ -199,6 +291,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       status: "PENDING_SYNC",
     };
     setState((prev) => ({ ...prev, reports: [report, ...prev.reports] }));
+
+    if (!state.isOffline && state.networkConnected) {
+      await mirrorReportToSupabase(report);
+    }
   };
 
   const syncPendingReports: AppContextValue["syncPendingReports"] = async () => {
@@ -206,26 +302,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const pending = state.reports.filter((r) => r.status === "PENDING_SYNC");
     for (const report of pending) {
       const ai = await analyzeReport(report.description, report.observedSigns);
+      const synced: FieldReport = { ...report, status: "SYNCED", ai };
       setState((prev) => ({
         ...prev,
-        reports: prev.reports.map((r) => (r.id === report.id ? { ...r, status: "SYNCED", ai } : r)),
+        reports: prev.reports.map((r) => (r.id === report.id ? synced : r)),
       }));
+      await mirrorReportToSupabase(synced);
 
       if (ai.severity === "HIGH") {
-        setState((prev) => ({
-          ...prev,
-          alerts: [
-            {
-              id: uuid(),
-              reportId: report.id,
-              level: "HIGH",
-              message: `Field report flagged HIGH severity by AI analysis: ${ai.summary}`,
-              createdAt: new Date().toISOString(),
-              status: "ACTIVE",
-            },
-            ...prev.alerts,
-          ],
-        }));
+        const alert: AlertItem = {
+          id: uuid(),
+          reportId: report.id,
+          level: "HIGH",
+          message: `Field report flagged HIGH severity by AI analysis: ${ai.summary}`,
+          createdAt: new Date().toISOString(),
+          status: "ACTIVE",
+        };
+        setState((prev) => ({ ...prev, alerts: [alert, ...prev.alerts] }));
+        if (supabaseConfigured && state.backendStatus === "CONNECTED") {
+          insertAlerts([alert]).catch((err) => console.warn("insertAlerts failed:", err));
+        }
       }
     }
   };
@@ -275,26 +371,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // report -> AI analysis loop without a second manual step.
     if (!state.isOffline && state.networkConnected) {
       const ai = await analyzeReport(report.description, report.observedSigns);
+      const synced: FieldReport = { ...report, status: "SYNCED", ai };
       setState((prev) => ({
         ...prev,
-        reports: prev.reports.map((r) => (r.id === report.id ? { ...r, status: "SYNCED", ai } : r)),
+        reports: prev.reports.map((r) => (r.id === report.id ? synced : r)),
       }));
+      await mirrorReportToSupabase(synced);
 
       if (ai.severity === "HIGH") {
-        setState((prev) => ({
-          ...prev,
-          alerts: [
-            {
-              id: uuid(),
-              reportId: report.id,
-              level: "HIGH",
-              message: `Field report flagged HIGH severity by AI analysis: ${ai.summary}`,
-              createdAt: new Date().toISOString(),
-              status: "ACTIVE",
-            },
-            ...prev.alerts,
-          ],
-        }));
+        const alert: AlertItem = {
+          id: uuid(),
+          reportId: report.id,
+          level: "HIGH",
+          message: `Field report flagged HIGH severity by AI analysis: ${ai.summary}`,
+          createdAt: new Date().toISOString(),
+          status: "ACTIVE",
+        };
+        setState((prev) => ({ ...prev, alerts: [alert, ...prev.alerts] }));
+        if (supabaseConfigured && state.backendStatus === "CONNECTED") {
+          insertAlerts([alert]).catch((err) => console.warn("insertAlerts failed:", err));
+        }
       }
     }
   };
@@ -304,6 +400,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ...prev,
       reports: prev.reports.map((r) => (r.id === id ? { ...r, status } : r)),
     }));
+    if (supabaseConfigured && state.backendStatus === "CONNECTED") {
+      updateFieldReportStatus(id, status).catch((err) => console.warn("updateFieldReportStatus failed:", err));
+    }
   };
 
   const acknowledgeAlert: AppContextValue["acknowledgeAlert"] = (id) => {
@@ -311,6 +410,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ...prev,
       alerts: prev.alerts.map((a) => (a.id === id ? { ...a, status: "ACKNOWLEDGED" } : a)),
     }));
+    if (supabaseConfigured && state.backendStatus === "CONNECTED") {
+      updateAlertStatus(id, "ACKNOWLEDGED").catch((err) => console.warn("updateAlertStatus failed:", err));
+    }
   };
 
   const resetDemo = () => {
@@ -343,7 +445,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const value: AppContextValue = {
     ...state,
     effectiveOffline,
-    setRole,
+    login,
+    logout,
     runScenario,
     setOffline,
     submitReport,

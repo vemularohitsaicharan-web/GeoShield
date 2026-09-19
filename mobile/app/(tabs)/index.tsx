@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import AlertBanner from '@/components/AlertBanner';
-import RoleSwitcher from '@/components/RoleSwitcher';
 import ScenarioSwitcher from '@/components/ScenarioSwitcher';
 import StatCard from '@/components/StatCard';
 import { useApp } from '@/lib/AppContext';
@@ -11,17 +10,27 @@ import { DEMO_REGION } from '@/lib/demoRegion';
 
 export default function DashboardScreen() {
   const {
+    role,
     predictions,
     alerts,
     reports,
     aiStatus,
     networkConnected,
+    backendStatus,
     lastPredictionAt,
     refreshAiStatus,
     generateSampleReport,
     resetDemo,
+    logout,
   } = useApp();
   const [generating, setGenerating] = useState(false);
+
+  const handleLogout = () => {
+    Alert.alert('Log out', 'Switch to a different role account?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Log out', style: 'destructive', onPress: () => logout() },
+    ]);
+  };
 
   const handleGenerateReport = async () => {
     setGenerating(true);
@@ -47,7 +56,15 @@ export default function DashboardScreen() {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={false} onRefresh={refreshAiStatus} tintColor={theme.accent} />}
     >
-      <RoleSwitcher />
+      <View style={styles.sessionRow}>
+        <View>
+          <Text style={styles.sessionLabel}>Signed in as</Text>
+          <Text style={styles.sessionRole}>{role?.replace('_', ' ')}</Text>
+        </View>
+        <Pressable onPress={handleLogout}>
+          <Text style={styles.logoutLink}>Log out</Text>
+        </Pressable>
+      </View>
 
       <AlertBanner />
 
@@ -87,8 +104,15 @@ export default function DashboardScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>System health</Text>
         <View style={styles.healthRow}>
-          <Text style={styles.healthLabel}>Database</Text>
-          <Text style={styles.healthValue}>LOCAL (demo)</Text>
+          <Text style={styles.healthLabel}>Database (Supabase)</Text>
+          <Text
+            style={[
+              styles.healthValue,
+              { color: backendStatus === 'CONNECTED' ? RISK_COLORS.LOW : RISK_COLORS.MEDIUM },
+            ]}
+          >
+            {backendStatus === 'CONNECTED' ? 'CONNECTED' : backendStatus === 'CHECKING' ? 'CHECKING' : 'LOCAL ONLY'}
+          </Text>
         </View>
         <View style={styles.healthRow}>
           <Text style={styles.healthLabel}>AI service (Groq)</Text>
@@ -143,6 +167,19 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.bg },
   content: { padding: 16, gap: 16, paddingBottom: 40 },
   region: { color: theme.textMuted, fontSize: 12, marginTop: 4 },
+  sessionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: theme.surface,
+    borderColor: theme.border,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  sessionLabel: { color: theme.textMuted, fontSize: 11 },
+  sessionRole: { color: theme.text, fontSize: 15, fontWeight: '800' },
+  logoutLink: { color: theme.accent, fontSize: 13, fontWeight: '700' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   section: {
     backgroundColor: theme.surface,

@@ -30,7 +30,7 @@ function loadEnvFile() {
 
 const env = { ...loadEnvFile(), ...process.env };
 const GROQ_API_KEY = env.GROQ_API_KEY;
-const GROQ_MODEL = env.GROQ_MODEL || "llama-3.1-8b-instant";
+const GROQ_MODEL = env.GROQ_MODEL || "openai/gpt-oss-20b";
 const PORT = Number(env.PORT || 8787);
 
 function withCors(res) {

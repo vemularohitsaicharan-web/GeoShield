@@ -96,7 +96,7 @@ export default function ReportsScreen() {
         description,
         severity,
         observedSigns: signs,
-        reporter: `${role.replace('_', ' ')} (demo user)`,
+        reporter: `${(role ?? 'UNKNOWN').replace('_', ' ')} (demo user)`,
         photoUri,
       });
       setDescription('');

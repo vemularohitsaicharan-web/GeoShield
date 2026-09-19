@@ -3,9 +3,11 @@ import { DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
 
-import { AppProvider } from '@/lib/AppContext';
+import LoginScreen from '@/components/LoginScreen';
+import { AppProvider, useApp } from '@/lib/AppContext';
 import { theme } from '@/lib/theme';
 
 const LightNavTheme = {
@@ -60,10 +62,30 @@ function RootLayoutNav() {
     <ThemeProvider value={LightNavTheme}>
       <AppProvider>
         <StatusBar style="dark" />
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        </Stack>
+        <AuthGate />
       </AppProvider>
     </ThemeProvider>
+  );
+}
+
+function AuthGate() {
+  const { authStatus } = useApp();
+
+  if (authStatus === 'CHECKING') {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.bg }}>
+        <ActivityIndicator size="large" color={theme.accent} />
+      </View>
+    );
+  }
+
+  if (authStatus === 'SIGNED_OUT') {
+    return <LoginScreen />;
+  }
+
+  return (
+    <Stack>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+    </Stack>
   );
 }

@@ -1,0 +1,13 @@
+{
+  "name": "geoshield-ner-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Repo-root dev scripts (Supabase seeding) for GeoShield-NER. The actual app is in mobile/, the Groq proxy is in server/.",
+  "type": "module",
+  "scripts": {
+    "seed": "node scripts/seed.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0"
+  }
+}
